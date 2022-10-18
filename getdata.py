@@ -1,3 +1,4 @@
+from ctypes.wintypes import tagSIZE
 import googleapiclient.discovery
 import googleapiclient.errors
 from googleapiclient.http import MediaFileUpload
@@ -9,15 +10,17 @@ import requests
 import json
 import shutil
 import os
+import re
 
 CLIENT_ID1 = os.environ.get("CLIENT_ID1")
 CLIENT_SECRET1 = os.environ.get("CLIENT_SECRET1")
 REFRESH_TOKEN1 = os.environ.get("REFRESH_TOKEN1")
+print(f"{CLIENT_ID1}\n\n{CLIENT_SECRET1}\n\n{REFRESH_TOKEN1}")
 
 with open("channels.json", "r") as f:
     allchans = json.load(f)
 
-channelsdata = []
+
 channels = []
 for c in allchans:
     if allchans[c] == False: # if not already scrapped
@@ -39,7 +42,8 @@ youtube = googleapiclient.discovery.build(
     'youtube', 'v3', credentials=credentials)
 
 for c in channels:
-    
+
+    channelsdata = []
     videoIds = []
         
     uploadsPList = list(c) # get the uploads playlist from channel id
@@ -47,8 +51,11 @@ for c in channels:
     uploadsPList = ''.join(uploadsPList)
 
     nextPageToken = ""
-    
+
+    oldervideo = False # stop scraping videos if they get older than a date. Results from api are order newest to oldest.
     while nextPageToken != None:
+        if oldervideo == True:
+            break
         request = youtube.playlistItems().list( # get video ids from upload playlist
         part="contentDetails",
         playlistId=uploadsPList,
@@ -65,8 +72,27 @@ for c in channels:
             pubTime = v['contentDetails']['videoPublishedAt'].split("T", 1)[0]
             daysSinceUpload=abs((datetime.strptime(pubTime, "%Y-%m-%d") - datetime.strptime(curTime, "%Y-%m-%d")).days) 
 
-            if daysSinceUpload > 30 and daysSinceUpload < 1095: # if the video was uploaded between 1 month to 3 years ago add its id to a list
-                videoIds.append(v['contentDetails']['videoId'])
+            duration = youtube.videos().list( # get duration in ISO 8601 format
+            part="contentDetails",
+            id=v['contentDetails']['videoId']
+            ).execute()['items'][0]['contentDetails']['duration']
+            try: # realllly shit code... needs fix
+                minutes = int(re.findall(r"(\d+)M", duration)[0]) * 60
+            except:
+                minutes = 0
+            try: 
+                seconds = int((re.findall(r"(\d+)S", duration))[0])
+            except:
+                seconds = 0
+            durationSeconds = minutes + seconds
+
+            if daysSinceUpload < 1095:  # if the video was uploaded between 1 month to 3 years ago, and is not a shorts video: add its id to a list
+                if daysSinceUpload > 30 and int(durationSeconds) > 60:
+                    videoIds.append(v['contentDetails']['videoId'])
+            else:
+                oldervideo = True
+                break
+
             
     for v in videoIds:
         print(v)
@@ -77,14 +103,19 @@ for c in channels:
         title = request['title'].replace("u'", "'")
         thumbnailURL = request['thumbnails']['default']['url']
         date = request['publishedAt']
+        channelName = request['channelTitle']
+        try:
+            tags = request['tags']
+        except:
+            tags = []
 
         request = youtube.videos().list(
             part="statistics",
             id=v
-        ).execute()
-        views = request['items'][0]['statistics']['viewCount']
+        ).execute()['items'][0]['statistics']
+        views = request['viewCount']
 
-        channelsdata.append([c, title, views, thumbnailURL, date])
+        channelsdata.append([c, channelName, title, views, thumbnailURL, date, tags, duration])
 
         res = requests.get(thumbnailURL, stream = True) # download thumbnail
         with open(f"thumbnails/{v}.jpg",'wb') as f:
